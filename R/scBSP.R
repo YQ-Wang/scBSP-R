@@ -23,11 +23,37 @@
 #' @importFrom stats quantile plnorm
 #' @export
 
+library(RcppHNSW)
+library(Matrix)
+library(sparseMatrixStats)
+library(spam)
+
 scBSP <- function(Coords, ExpMat_Sp, D_1 = 1.0, D_2 = 3.0, Exp_Norm = TRUE, Coords_Norm_Method = c("Sliced", "Overall", "None"), K_NN = 100, treetype = "kd"){
   # define a function to calculate variance of local means
   VarLocalMeans <- function(DK){
-    KDBinary <- RANN::nn2(Coords, k = K_NN, treetype = treetype, searchtype = "radius", radius = DK)$nn.idx
-    KDBinary <- Matrix::Matrix(KDBinary, sparse = TRUE)
+    # KDBinary <- RANN::nn2(Coords, k = K_NN, treetype = treetype, searchtype = "radius", radius = DK)$nn.idx
+    CoordsMat <- as.matrix(Coords)
+    M <- 16
+    ef <- 200
+    dim <- ncol(CoordsMat)
+    nitems <- nrow(CoordsMat)
+    ann <- new(HnswL2, dim, nitems, M, ef)
+    ann$addItems(CoordsMat)
+    res <- ann$getNNsList(CoordsMat, k = K_NN, include_distances = TRUE)
+    KDBinary <- Matrix(0, nitems, nitems, sparse = TRUE)
+    # Fill in the sparse matrix based on distance threshold (DK^2)
+    for (i in 1:length(res$item)) {
+      neighbors <- res$item[[i]]
+      distances <- res$distance[[i]] # Squared Euclidean distances
+      
+      # Filter neighbors based on DK^2
+      valid_neighbors <- neighbors[distances <= DK^2]
+      
+      # Update the sparse matrix to indicate neighbor relationships
+      if (length(valid_neighbors) > 0) {
+        KDBinary[i, valid_neighbors] <- 1
+      }
+    }
     KDBinary_rowp <- sparseMatrixStats::rowCounts(KDBinary>0)
     KDBinary_rowind <- rep(1:length(KDBinary_rowp), KDBinary_rowp)
     KDBinary <- spam::as.spam.dgCMatrix(KDBinary)
@@ -42,7 +68,7 @@ scBSP <- function(Coords, ExpMat_Sp, D_1 = 1.0, D_2 = 3.0, Exp_Norm = TRUE, Coor
     var_X_K <- sparseMatrixStats::rowVars(X_kj)
     return(var_X_K)
   }
-  
+
   # normalization of expressions
   SpMinMax <- function(ExpMat_Sp){
     # will use approximation
